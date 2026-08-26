@@ -1,163 +1,110 @@
-# 易语言编译服务 API 文档
+# E2EXE-API 接口文档
 
-## 概述
+## 基础信息
 
-易语言编译服务是一个基于 HTTP 的 RESTful API 服务，用于在命令行中编译易语言源码文件，便于自动构建、批处理和部署流程。
+| 项目 | 说明 |
+|------|------|
+| 服务地址 | `http://localhost:8800` |
+| 请求格式 | `application/json` |
+| 响应格式 | `application/json` |
+| 文件传输 | Base64 编码 |
 
-### 基本信息
-
-- **服务地址**: `http://localhost:8800`
-- **请求格式**: JSON
-- **响应格式**: JSON / 二进制文件
-
-### 支持编译类型
+## 支持编译类型
 
 | 类型 | 说明 |
 |------|------|
 | `normal` | 普通编译 |
 | `static` | 静态编译 |
 | `independent` | 独立编译 |
-| `blackmoon` | 黑月编译 |
+| `blackmoon` | 黑月编译（默认模式） |
+| `blackmoon_asm` | 黑月汇编模式 |
+| `blackmoon_cpp` | 黑月 C++ 模式 |
+| `blackmoon_mfc` | 黑月 MFC 模式 |
 | `package` | 易包编译 |
 | `debug` | 调试运行 |
 
 ---
 
-## 1. 提交编译 - POST /MakeE
+## POST /MakeE
 
-提交易语言源码并启动编译任务。
+提交编译任务
 
-### 请求
-
-**URL**: `/MakeE`  
-**Method**: `POST`  
-**Content-Type**: `application/json`
-
-**请求体**:
+### 请求体
 
 ```json
 {
-    "type": "normal",
+    "type": "static",
     "ecode": "base64编码的源码内容"
 }
 ```
 
-**参数说明**:
-
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `type` | string | 是 | 编译类型：`normal`/`static`/`independent`/`blackmoon`/`package`/`debug` |
-| `ecode` | string | 是 | Base64 编码的易语言源码文件内容 |
+| `type` | string | 是 | 编译类型 |
+| `ecode` | string | 是 | Base64 编码的易语言源码 |
 
 ### 响应
 
-**成功响应** (200):
+**成功 (200)**
 
 ```json
 {
     "code": 200,
-    "hash": "a1b2c3d4e5f6..."
+    "hash": "a1b2c3d4e5f67890..."
 }
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `code` | integer | 状态码，200 表示成功 |
-| `hash` | string | 源码文件的 SHA256 哈希值，用于后续查询和下载 |
+| `code` | integer | 状态码 |
+| `hash` | string | 任务唯一标识（SHA256） |
 
-**错误响应**:
+**错误 (400)**
 
 ```json
 {
     "code": 400,
-    "error": "错误描述信息"
+    "error": "错误描述"
 }
-```
-
-### 示例
-
-**请求示例**:
-
-```bash
-curl -X POST http://localhost:8800/MakeE \
-  -H "Content-Type: application/json" \
-  -d '{
-    "type": "static",
-    "ecode": "5L2g5aW955qE5rqQ56CB5YaF5rOo..."
-  }'
-```
-
-**Python 示例**:
-
-```python
-import requests
-import base64
-
-with open('test.e', 'rb') as f:
-    file_data = f.read()
-
-response = requests.post('http://localhost:8800/MakeE', json={
-    'type': 'static',
-    'ecode': base64.b64encode(file_data).decode('utf-8')
-})
-
-result = response.json()
-file_hash = result['hash']
-print(f"任务已提交，Hash: {file_hash}")
 ```
 
 ---
 
-## 2. 查询状态 - POST /State
+## POST /State
 
-查询编译任务的当前状态。
+查询编译状态
 
-### 请求
-
-**URL**: `/State`  
-**Method**: `POST`  
-**Content-Type**: `application/json`
-
-**请求体**:
+### 请求体
 
 ```json
 {
-    "hash": "a1b2c3d4e5f6..."
+    "hash": "a1b2c3d4e5f67890..."
 }
 ```
 
-**参数说明**:
-
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `hash` | string | 是 | 提交编译时返回的文件哈希值 |
+| `hash` | string | 是 | 任务标识 |
 
 ### 响应
 
-**成功响应** (200):
+**成功 (200)**
 
 ```json
 {
     "code": 200,
-    "state": "Building"
+    "state": "OK",
+    "message": "编译成功"
 }
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `code` | integer | 状态码，200 表示成功 |
-| `state` | string | 编译状态：`Pending`/`Building`/`OK`/`Error` |
+| `code` | integer | 状态码 |
+| `state` | string | 状态：`Pending`/`Building`/`OK`/`Error` |
+| `message` | string | 状态描述 |
 
-**状态说明**:
-
-| 状态 | 说明 |
-|------|------|
-| `Pending` | 等待编译 |
-| `Building` | 编译中 |
-| `OK` | 编译成功，可下载 |
-| `Error` | 编译失败 |
-
-**错误响应**:
+**任务不存在 (404)**
 
 ```json
 {
@@ -166,79 +113,33 @@ print(f"任务已提交，Hash: {file_hash}")
 }
 ```
 
-### 示例
-
-**请求示例**:
-
-```bash
-curl -X POST http://localhost:8800/State \
-  -H "Content-Type: application/json" \
-  -d '{
-    "hash": "a1b2c3d4e5f6..."
-  }'
-```
-
-**Python 示例**:
-
-```python
-import requests
-import time
-
-def wait_for_complete(file_hash):
-    while True:
-        response = requests.post('http://localhost:8800/State', json={
-            'hash': file_hash
-        })
-        result = response.json()
-        
-        if result['state'] == 'OK':
-            return True
-        elif result['state'] == 'Error':
-            return False
-        
-        time.sleep(3)
-
-# 等待编译完成
-if wait_for_complete(file_hash):
-    print("编译成功！")
-else:
-    print("编译失败！")
-```
-
 ---
 
-## 3. 下载文件 - POST /DownFile
+## POST /DownFile
 
-下载编译完成的可执行文件。
+下载编译结果（**首次下载后自动删除，不可重复下载**）
 
-### 请求
-
-**URL**: `/DownFile`  
-**Method**: `POST`  
-**Content-Type**: `application/json`
-
-**请求体**:
+### 请求体
 
 ```json
 {
-    "hash": "a1b2c3d4e5f6..."
+    "hash": "a1b2c3d4e5f67890..."
 }
 ```
 
-**参数说明**:
-
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `hash` | string | 是 | 提交编译时返回的文件哈希值 |
+| `hash` | string | 是 | 任务标识 |
 
 ### 响应
 
-**成功响应** (200):
+**成功 (200)**
 
-- 返回二进制文件流，文件名为 `{hash}.exe`
+- 返回二进制文件流
 - Content-Type: `application/octet-stream`
+- 文件名: `{hash}.exe`
 
-**错误响应**:
+**文件未准备好 (400)**
 
 ```json
 {
@@ -247,12 +148,21 @@ else:
 }
 ```
 
-或
+**任务不存在 (404)**
 
 ```json
 {
     "code": 404,
     "error": "未找到该任务"
+}
+```
+
+**文件已下载或已过期 (410)**
+
+```json
+{
+    "code": 410,
+    "error": "文件已下载，已被删除"
 }
 ```
 
@@ -265,56 +175,56 @@ else:
 }
 ```
 
-### 示例
+---
 
-**请求示例**:
+## POST /ErrorLog
 
-```bash
-curl -X POST http://localhost:8800/DownFile \
-  -H "Content-Type: application/json" \
-  -d '{
-    "hash": "a1b2c3d4e5f6..."
-  }' \
-  --output output.exe
+获取编译错误日志
+
+### 请求体
+
+```json
+{
+    "hash": "a1b2c3d4e5f67890..."
+}
 ```
 
-**Python 示例**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `hash` | string | 是 | 任务标识 |
 
-```python
-import requests
+### 响应
 
-def download_file(file_hash, output_path):
-    response = requests.post('http://localhost:8800/DownFile', json={
-        'hash': file_hash
-    })
-    
-    if response.status_code == 200:
-        with open(output_path, 'wb') as f:
-            f.write(response.content)
-        print(f"下载成功: {output_path}")
-        return True
-    else:
-        print(f"下载失败: {response.status_code}")
-        return False
+**成功 (200)**
 
-# 下载编译结果
-download_file(file_hash, 'output.exe')
+```json
+{
+    "code": 200,
+    "error_log": "详细错误日志内容..."
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `code` | integer | 状态码 |
+| `error_log` | string | 错误日志内容 |
+
+**无日志 (200)**
+
+```json
+{
+    "code": 200,
+    "error_log": "错误日志已被清理"
+}
 ```
 
 ---
 
-## 4. 健康检查 - GET /Health
+## GET /Health
 
-检查服务是否正常运行。
-
-### 请求
-
-**URL**: `/Health`  
-**Method**: `GET`
+健康检查
 
 ### 响应
-
-**成功响应** (200):
 
 ```json
 {
@@ -330,33 +240,13 @@ download_file(file_hash, 'output.exe')
 | `timestamp` | string | 当前时间（ISO格式） |
 | `active_tasks` | integer | 当前活跃任务数 |
 
-### 示例
-
-```bash
-curl http://localhost:8800/Health
-```
-
-```python
-import requests
-
-response = requests.get('http://localhost:8800/Health')
-print(response.json())
-```
-
 ---
 
-## 5. 列出任务 - GET /ListTasks
+## GET /ListTasks
 
-列出所有编译任务（调试用）。
-
-### 请求
-
-**URL**: `/ListTasks`  
-**Method**: `GET`
+列出所有任务（调试用）
 
 ### 响应
-
-**成功响应** (200):
 
 ```json
 {
@@ -364,187 +254,126 @@ print(response.json())
     "total": 2,
     "tasks": [
         {
-            "hash": "a1b2c3d4e5f6...",
+            "hash": "a1b2c3d4...",
             "state": "OK",
             "compile_type": "static",
+            "message": "编译成功",
+            "downloaded": false,
             "start_time": "2024-01-01T12:00:00",
             "end_time": "2024-01-01T12:05:00"
-        },
-        {
-            "hash": "f6e5d4c3b2a1...",
-            "state": "Building",
-            "compile_type": "normal",
-            "start_time": "2024-01-01T12:10:00",
-            "end_time": null
         }
     ]
 }
 ```
 
-### 示例
-
-```bash
-curl http://localhost:8800/ListTasks
-```
-
----
-
-## 完整工作流程示例
-
-### Python 完整示例
-
-```python
-import requests
-import base64
-import time
-import sys
-
-def compile_e_file(file_path, compile_type='normal'):
-    """完整的编译流程"""
-    
-    # 1. 读取并提交源码
-    with open(file_path, 'rb') as f:
-        file_data = f.read()
-    
-    response = requests.post('http://localhost:8800/MakeE', json={
-        'type': compile_type,
-        'ecode': base64.b64encode(file_data).decode('utf-8')
-    })
-    
-    if response.status_code != 200:
-        print(f"提交失败: {response.text}")
-        return False
-    
-    result = response.json()
-    file_hash = result['hash']
-    print(f"✅ 任务已提交，Hash: {file_hash}")
-    
-    # 2. 等待编译完成
-    print("⏳ 等待编译完成...")
-    while True:
-        response = requests.post('http://localhost:8800/State', json={
-            'hash': file_hash
-        })
-        
-        if response.status_code != 200:
-            print(f"查询失败: {response.text}")
-            return False
-        
-        state = response.json()['state']
-        print(f"📊 当前状态: {state}")
-        
-        if state == 'OK':
-            print("✅ 编译成功！")
-            break
-        elif state == 'Error':
-            print("❌ 编译失败！")
-            return False
-        
-        time.sleep(3)
-    
-    # 3. 下载编译结果
-    response = requests.post('http://localhost:8800/DownFile', json={
-        'hash': file_hash
-    })
-    
-    if response.status_code == 200:
-        output_path = file_path.replace('.e', '.exe')
-        with open(output_path, 'wb') as f:
-            f.write(response.content)
-        print(f"✅ 下载成功: {output_path}")
-        return True
-    else:
-        print(f"❌ 下载失败: {response.text}")
-        return False
-
-# 使用示例
-if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print("用法: python script.py <源码文件> [编译类型]")
-        sys.exit(1)
-    
-    file_path = sys.argv[1]
-    compile_type = sys.argv[2] if len(sys.argv) > 2 else 'normal'
-    
-    compile_e_file(file_path, compile_type)
-```
-
-### 使用 curl 的完整流程
-
-```bash
-#!/bin/bash
-
-# 1. 提交编译
-FILE_HASH=$(curl -s -X POST http://localhost:8800/MakeE \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"type\": \"static\",
-    \"ecode\": \"$(base64 -w0 test.e)\"
-  }" | jq -r '.hash')
-
-echo "任务提交成功，Hash: $FILE_HASH"
-
-# 2. 查询状态
-while true; do
-  STATE=$(curl -s -X POST http://localhost:8800/State \
-    -H "Content-Type: application/json" \
-    -d "{\"hash\": \"$FILE_HASH\"}" | jq -r '.state')
-  
-  echo "当前状态: $STATE"
-  
-  if [ "$STATE" = "OK" ]; then
-    break
-  elif [ "$STATE" = "Error" ]; then
-    echo "编译失败"
-    exit 1
-  fi
-  
-  sleep 3
-done
-
-# 3. 下载文件
-curl -X POST http://localhost:8800/DownFile \
-  -H "Content-Type: application/json" \
-  -d "{\"hash\": \"$FILE_HASH\"}" \
-  --output output.exe
-
-echo "下载完成: output.exe"
-```
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `code` | integer | 状态码 |
+| `total` | integer | 任务总数 |
+| `tasks` | array | 任务列表 |
+| `tasks[].hash` | string | 任务标识 |
+| `tasks[].state` | string | 任务状态 |
+| `tasks[].compile_type` | string | 编译类型 |
+| `tasks[].message` | string | 状态描述 |
+| `tasks[].downloaded` | boolean | 是否已下载 |
+| `tasks[].start_time` | string | 开始时间 |
+| `tasks[].end_time` | string | 结束时间 |
 
 ---
 
-## 错误码说明
+## 状态码说明
 
 | HTTP状态码 | 说明 |
 |-----------|------|
 | 200 | 成功 |
 | 400 | 请求参数错误 |
 | 404 | 任务未找到 |
-| 410 | 文件已过期 |
+| 410 | 文件已下载或已过期 |
 | 500 | 服务器内部错误 |
 
 ---
 
-## 注意事项
+## 使用示例
 
-1. **文件过期时间**: 编译完成后，文件在1小时后自动删除
-2. **并发限制**: 多个任务会排队编译，建议合理控制提交频率
-3. **超时时间**: 单个编译任务超时时间为10分钟
-4. **安全建议**: 生产环境建议添加身份认证和访问控制
-5. **日志查看**: 服务日志保存在 `service.log` 文件中
+### Python
 
----
+```python
+import requests
+import base64
+import time
 
-## 常见问题
+# 1. 提交编译
+with open('test.e', 'rb') as f:
+    ecode = base64.b64encode(f.read()).decode('utf-8')
 
-### Q: 为什么返回"文件已过期"？
-A: 编译成功后的文件会在1小时后自动删除，请及时下载。
+response = requests.post('http://localhost:8800/MakeE', json={
+    'type': 'static',
+    'ecode': ecode
+})
+file_hash = response.json()['hash']
+print(f'Hash: {file_hash}')
 
-### Q: 如何查看编译失败的具体原因？
-A: 查看服务日志文件 `service.log`，其中包含详细的错误信息。
+# 2. 查询状态
+while True:
+    response = requests.post('http://localhost:8800/State', json={
+        'hash': file_hash
+    })
+    state = response.json()['state']
+    if state == 'OK':
+        break
+    elif state == 'Error':
+        print('编译失败')
+        exit(1)
+    time.sleep(2)
 
-### Q: 支持哪些编译类型？
-A: 支持 `normal`、`static`、`independent`、`blackmoon`、`package`、`debug`。
+# 3. 下载文件（首次下载后自动删除）
+response = requests.post('http://localhost:8800/DownFile', json={
+    'hash': file_hash
+})
+with open('output.exe', 'wb') as f:
+    f.write(response.content)
+print('下载成功')
+```
 
-### Q: 如何提高编译速度？
-A: 建议减少并发提交数量，确保系统资源充足。
+### PowerShell
+
+```powershell
+# 提交编译
+$ecode = [Convert]::ToBase64String([IO.File]::ReadAllBytes('test.e'))
+$response = Invoke-RestMethod -Uri 'http://localhost:8800/MakeE' -Method Post -Body (@{
+    type = 'static'
+    ecode = $ecode
+} | ConvertTo-Json) -ContentType 'application/json'
+$hash = $response.hash
+
+# 查询状态
+while ($true) {
+    $state = (Invoke-RestMethod -Uri 'http://localhost:8800/State' -Method Post -Body (@{ hash = $hash } | ConvertTo-Json) -ContentType 'application/json').state
+    if ($state -eq 'OK') { break }
+    if ($state -eq 'Error') { exit 1 }
+    Start-Sleep -Seconds 2
+}
+
+# 下载文件
+Invoke-RestMethod -Uri 'http://localhost:8800/DownFile' -Method Post -Body (@{ hash = $hash } | ConvertTo-Json) -ContentType 'application/json' -OutFile 'output.exe'
+```
+
+### curl
+
+```bash
+# 1. 提交编译
+curl -X POST http://localhost:8800/MakeE \
+  -H "Content-Type: application/json" \
+  -d "{\"type\":\"static\",\"ecode\":\"$(base64 -w0 test.e)\"}"
+
+# 2. 查询状态
+curl -X POST http://localhost:8800/State \
+  -H "Content-Type: application/json" \
+  -d '{"hash":"a1b2c3d4..."}'
+
+# 3. 下载文件
+curl -X POST http://localhost:8800/DownFile \
+  -H "Content-Type: application/json" \
+  -d '{"hash":"a1b2c3d4..."}' \
+  --output output.exe
+```
