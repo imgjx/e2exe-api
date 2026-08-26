@@ -457,7 +457,3 @@ A: 修改 `app.py` 中的 `Config.PORT` 配置项。
 
 - [ecl](https://github.com/zhongjianhua163/ECommandPrompt) - 易语言命令行编译工具
 - [Flask](https://flask.palletsprojects.com/) - Web 框架
-
----
-
-**Made with ❤️ for the EasyLanguage Community**
