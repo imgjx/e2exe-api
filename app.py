@@ -1,8 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-易语言API编译服务
-"""
-
 import os
 import sys
 import json
@@ -13,9 +9,8 @@ import time
 import shutil
 import logging
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask import Flask, request, jsonify, send_file
-from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
@@ -23,35 +18,19 @@ app = Flask(__name__)
 class Config:
     HOST = '0.0.0.0'
     PORT = 8800
-    
-    TEMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp')
+    TEMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_debug')
     UPLOAD_DIR = os.path.join(TEMP_DIR, 'upload')
     COMPILE_DIR = os.path.join(TEMP_DIR, 'compile')
     OUTPUT_DIR = os.path.join(TEMP_DIR, 'output')
-    
     ECL_EXE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ecl.exe')
     EXPIRE_TIME = 3600
-    
-    LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'service.log')
-
-    COMPILE_TYPES = {
-        'normal': [],
-        'static': ['-s'],
-        'independent': ['-d'],
-        'blackmoon': ['-bm'],
-        'blackmoon_asm': ['-bm0'],
-        'blackmoon_cpp': ['-bm1'],
-        'blackmoon_mfc': ['-bm2'],
-        'package': ['-p'],
-        'debug': ['-r'],
-    }
+    LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'debug.log')
 
 # 初始化目录
 for dir_name in [Config.UPLOAD_DIR, Config.COMPILE_DIR, Config.OUTPUT_DIR]:
     if not os.path.exists(dir_name):
         os.makedirs(dir_name)
 
-# 配置日志 - 精简模式
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -60,25 +39,25 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
-# 关闭第三方库日志
 logging.getLogger('werkzeug').setLevel(logging.WARNING)
-
 logger = logging.getLogger(__name__)
 
 tasks = {}
 
 # ==================== 任务类 ====================
 class CompileTask:
-    def __init__(self, file_hash, compile_type='normal'):
+    def __init__(self, file_hash):
         self.file_hash = file_hash
-        self.compile_type = compile_type
         self.state = 'Pending'
         self.message = ''
+        self.error_detail = ''
+        self.return_code = None
         self.start_time = datetime.now()
         self.end_time = None
         self.output_file = None
         self.source_path = None
-        self.compile_dir = None  # 记录编译目录以便清理
+        self.compile_dir = None
+        self.downloaded = False
 
 # ==================== 工具函数 ====================
 def calculate_file_hash(file_data):
@@ -92,46 +71,155 @@ def save_upload_file(file_data, file_hash):
         f.write(file_data)
     return file_path
 
-def cleanup_compile_files(task):
-    """清理编译相关的所有文件"""
-    try:
-        # 删除源代码文件
-        if task.source_path and os.path.exists(task.source_path):
-            os.remove(task.source_path)
-            logger.debug(f"已删除源文件: {task.source_path}")
-        
-        # 删除编译目录（包含所有临时文件）
-        if task.compile_dir and os.path.exists(task.compile_dir):
-            shutil.rmtree(task.compile_dir, ignore_errors=True)
-            logger.debug(f"已删除编译目录: {task.compile_dir}")
-        
-        # 删除输出文件（如果存在且不是最终输出文件）
-        if task.output_file and os.path.exists(task.output_file):
-            os.remove(task.output_file)
-            logger.debug(f"已删除输出文件: {task.output_file}")
-        
-        # 从内存中删除任务记录（延迟删除，防止正在下载）
-        # 在清理函数中不立即删除tasks记录，由cleanup_expired_files处理
-        
-    except Exception as e:
-        logger.warning(f"清理文件失败: {str(e)}")
+def force_delete_file(file_path, max_retries=6, delay=5):
+    if not file_path or not os.path.exists(file_path):
+        return True
+    for attempt in range(max_retries + 1):
+        try:
+            os.remove(file_path)
+            return True
+        except PermissionError:
+            if attempt < max_retries:
+                time.sleep(delay)
+            else:
+                try:
+                    os.system(f'del /f /q "{file_path}" 2>nul')
+                    if not os.path.exists(file_path):
+                        return True
+                    os.chmod(file_path, 0o777)
+                    os.remove(file_path)
+                    return True
+                except:
+                    return False
+        except:
+            if attempt < max_retries:
+                time.sleep(delay)
+            else:
+                return False
+    return False
 
-def compile_e_source(source_path, file_hash, task):
+def force_delete_directory(dir_path):
+    if not dir_path or not os.path.exists(dir_path):
+        return True
+    try:
+        shutil.rmtree(dir_path, ignore_errors=True)
+        return True
+    except:
+        try:
+            os.system(f'rmdir /s /q "{dir_path}" 2>nul')
+            return True
+        except:
+            return False
+
+def build_compile_args(options):
+    args = []
+    compile_type = options.get('type', 'normal')
+    type_map = {
+        'normal': [], 'static': ['-s'], 'independent': ['-d'],
+        'blackmoon': ['-bm'], 'blackmoon_asm': ['-bm0'],
+        'blackmoon_cpp': ['-bm1'], 'blackmoon_mfc': ['-bm2'],
+        'package': ['-p'], 'debug': ['-r'],
+    }
+    if compile_type in type_map:
+        args.extend(type_map[compile_type])
+    
+    if options.get('epath'): args.extend(['-epath', options['epath']])
+    if options.get('password'): args.extend(['-pwd', options['password']])
+    if options.get('bmcfg'): args.extend(['-bmcfg', options['bmcfg']])
+    if options.get('bmdes'): args.extend(['-bmdes', options['bmdes']])
+    if options.get('libs'):
+        libs = options['libs']
+        if isinstance(libs, list): libs = ';'.join(libs)
+        args.extend(['-lib', libs])
+    if options.get('show'): args.append('-show')
+    if options.get('wait_key'): args.append('-k')
+    if options.get('start_timeout'): args.extend(['-st', str(options['start_timeout'])])
+    if options.get('compile_timeout'): args.extend(['-ct', str(options['compile_timeout'])])
+    if options.get('quiet'): args.append('-q')
+    if options.get('no_logo'): args.append('-nologo')
+    if options.get('utf8'): args.append('-utf8')
+    elif options.get('unicode'): args.append('-unicode')
+    if options.get('version'): args.extend(['-ver', options['version']])
+    
+    if options.get('consts'):
+        const_str = options['consts']
+        if isinstance(const_str, dict):
+            parts = []
+            for k, v in const_str.items():
+                if isinstance(v, str) and v.startswith('@'):
+                    parts.append(f"{k}={v}")
+                else:
+                    parts.append(f'{k}="{v}"')
+            const_str = ';'.join(parts)
+        args.extend(['-const', const_str])
+    
+    if options.get('pictures'):
+        pic_str = options['pictures']
+        if isinstance(pic_str, dict):
+            parts = []
+            for k, v in pic_str.items():
+                parts.append(f"{k}=@{v}" if not v.startswith('@') else f"{k}={v}")
+            pic_str = ';'.join(parts)
+        args.extend(['-pic', pic_str])
+    
+    if options.get('sounds'):
+        sound_str = options['sounds']
+        if isinstance(sound_str, dict):
+            parts = []
+            for k, v in sound_str.items():
+                parts.append(f"{k}=@{v}" if not v.startswith('@') else f"{k}={v}")
+            sound_str = ';'.join(parts)
+        args.extend(['-sound', sound_str])
+    
+    sys_opts = {
+        'fast_array': '-FastArry', 'no_fast_array': '-FastArry-',
+        'check_dll_stack': '-CheckDllStack', 'no_check_dll_stack': '-CheckDllStack-',
+        'check_loop': '-CheckLoop', 'no_check_loop': '-CheckLoop-',
+        'windows6': '-Windows6.0', 'no_windows6': '-Windows6.0-',
+        'uac': '-UAC', 'no_uac': '-UAC-',
+        'out_lib': '-OutLib', 'no_out_lib': '-OutLib-',
+        'check_name': '-CheckName', 'no_check_name': '-CheckName-',
+    }
+    for opt_name, opt_arg in sys_opts.items():
+        if options.get(opt_name):
+            args.append(opt_arg)
+    
+    if options.get('junk_level') is not None:
+        args.extend(['-JunkLevel', str(options['junk_level'])])
+    if options.get('upset'):
+        args.extend(['-Upset', str(options['upset'])])
+    if options.get('keep_e_config'):
+        args.append('-KeepEConfig')
+    if options.get('keep_lib_list'):
+        args.append('-KeepLibList')
+    
+    link_params = {
+        'linker': '-e_linker', 'output_file': '-e_output_file',
+        'extra_args': '-e_extra_args', 'show_command_line': '-e_show_command_line',
+        'retain_intermediate': '-e_retain_intermediate_files',
+        'show_warning': '-e_show_warning',
+    }
+    for param_name, param_arg in link_params.items():
+        if options.get(param_name):
+            args.extend([param_arg, str(options[param_name])])
+    
+    return args
+
+def compile_e_source(source_path, file_hash, task, options):
     try:
         task.state = 'Building'
         task.message = '编译中...'
-        logger.info(f"编译: {file_hash[:16]}... 类型: {task.compile_type}")
+        logger.info(f"编译: {file_hash[:16]}..., 类型: {options.get('type', 'normal')}")
         
         compile_dir = os.path.join(Config.COMPILE_DIR, file_hash)
+        task.compile_dir = compile_dir
         if not os.path.exists(compile_dir):
             os.makedirs(compile_dir)
-        task.compile_dir = compile_dir  # 记录编译目录
         
         output_path = os.path.join(compile_dir, f"{file_hash}.exe")
         
         cmd = [Config.ECL_EXE, 'make', source_path, output_path]
-        if task.compile_type in Config.COMPILE_TYPES:
-            cmd.extend(Config.COMPILE_TYPES[task.compile_type])
+        cmd.extend(build_compile_args(options))
         
         result = subprocess.run(
             cmd,
@@ -143,91 +231,57 @@ def compile_e_source(source_path, file_hash, task):
             errors='ignore'
         )
         
-        # 检查输出文件是否存在
+        task.return_code = result.returncode
+        
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             task.state = 'OK'
             task.message = '编译成功'
-            
             final_output = os.path.join(Config.OUTPUT_DIR, f"{file_hash}.exe")
             shutil.copy2(output_path, final_output)
             task.output_file = final_output
-            
             logger.info(f"编译成功: {file_hash[:16]}...")
         else:
-            error_msg = result.stderr or result.stdout or "未知错误"
             task.state = 'Error'
             task.message = '编译失败'
-            
-            # 保存错误日志
-            error_log_path = os.path.join(compile_dir, "error.log")
-            with open(error_log_path, 'w', encoding='gbk', errors='ignore') as f:
-                f.write(f"命令: {' '.join(cmd)}\n")
-                f.write(f"返回码: {result.returncode}\n")
-                f.write(f"输出:\n{error_msg}\n")
-            
+            task.error_detail = result.stderr or result.stdout or "未知错误"
             logger.error(f"编译失败: {file_hash[:16]}...")
             
     except subprocess.TimeoutExpired:
         task.state = 'Error'
         task.message = '编译超时'
-        logger.error(f"编译超时: {file_hash[:16]}...")
+        task.error_detail = '编译超过10分钟'
     except Exception as e:
         task.state = 'Error'
         task.message = f'编译异常: {str(e)}'
-        logger.error(f"编译异常: {file_hash[:16]}...")
+        task.error_detail = str(e)
     finally:
         task.end_time = datetime.now()
-        # 编译完成后，无论成功还是失败，都清理文件
-        cleanup_compile_files(task)
-        logger.info(f"文件清理完成: {file_hash[:16]}...")
+        if task.source_path and os.path.exists(task.source_path):
+            force_delete_file(task.source_path)
+        if task.compile_dir and os.path.exists(task.compile_dir):
+            force_delete_directory(task.compile_dir)
+        logger.info(f"编译完成: {file_hash[:16]}..., 状态: {task.state}")
 
 def cleanup_expired_files():
-    """清理过期任务和文件"""
     while True:
         try:
             now = datetime.now()
             expired = []
-            
             for file_hash, task in tasks.items():
-                if task.state in ['OK', 'Error'] and task.end_time:
-                    # 给用户预留下载时间
+                if task.downloaded:
+                    expired.append(file_hash)
+                    continue
+                if task.state == 'OK' and task.end_time:
                     if (now - task.end_time).total_seconds() > Config.EXPIRE_TIME:
                         expired.append(file_hash)
-                elif task.state == 'Pending' and (now - task.start_time).total_seconds() > 600:
-                    # 待处理超过10分钟的任务也清理
-                    expired.append(file_hash)
-            
             for file_hash in expired:
                 task = tasks[file_hash]
-                # 确保所有文件都已清理（安全冗余）
                 if task.output_file and os.path.exists(task.output_file):
-                    try:
-                        os.remove(task.output_file)
-                    except:
-                        pass
-                # 从任务列表中删除
+                    force_delete_file(task.output_file)
                 del tasks[file_hash]
-                logger.info(f"清理过期任务: {file_hash[:16]}...")
-            
-            # 清理输出目录中可能残留的文件（安全措施）
-            output_files = os.listdir(Config.OUTPUT_DIR)
-            for filename in output_files:
-                if filename.endswith('.exe'):
-                    file_hash = filename.replace('.exe', '')
-                    if file_hash not in tasks:
-                        file_path = os.path.join(Config.OUTPUT_DIR, filename)
-                        try:
-                            # 检查文件修改时间，超过1小时的文件删除
-                            if os.path.getmtime(file_path) < time.time() - 3600:
-                                os.remove(file_path)
-                                logger.debug(f"清理残留输出文件: {filename}")
-                        except:
-                            pass
-            
-            time.sleep(300)
-        except Exception as e:
-            logger.error(f"清理异常: {str(e)}")
-            time.sleep(300)
+            time.sleep(60)
+        except:
+            time.sleep(60)
 
 # ==================== API 接口 ====================
 
@@ -238,53 +292,41 @@ def make_e():
         if not data:
             return jsonify({'code': 400, 'error': '请求体必须是JSON格式'}), 400
         
-        compile_type = data.get('type', 'normal')
         ecode_base64 = data.get('ecode')
-        
         if not ecode_base64:
             return jsonify({'code': 400, 'error': '缺少ecode字段'}), 400
         
-        if compile_type not in Config.COMPILE_TYPES:
-            return jsonify({
-                'code': 400,
-                'error': f'不支持的编译类型: {compile_type}'
-            }), 400
-        
         try:
             ecode = base64.b64decode(ecode_base64)
-        except Exception as e:
-            return jsonify({'code': 400, 'error': f'base64解码失败: {str(e)}'}), 400
+        except:
+            return jsonify({'code': 400, 'error': 'base64解码失败'}), 400
         
         file_hash = calculate_file_hash(ecode)
         
         if file_hash in tasks:
             task = tasks[file_hash]
             if task.state in ['Pending', 'Building']:
-                return jsonify({
-                    'code': 200,
-                    'hash': file_hash,
-                    'message': '任务已存在，正在处理中'
-                })
+                return jsonify({'code': 200, 'hash': file_hash, 'message': '任务已存在'})
         
         source_path = save_upload_file(ecode, file_hash)
         
-        task = CompileTask(file_hash, compile_type)
+        options = data.get('options', {})
+        options['type'] = data.get('type', 'normal')
+        
+        task = CompileTask(file_hash)
         task.source_path = source_path
         tasks[file_hash] = task
         
         thread = threading.Thread(
             target=compile_e_source,
-            args=(source_path, file_hash, task)
+            args=(source_path, file_hash, task, options)
         )
         thread.daemon = True
         thread.start()
         
-        logger.info(f"提交任务: {file_hash[:16]}..., 类型: {compile_type}, 大小: {len(ecode)} bytes")
+        logger.info(f"提交任务: {file_hash[:16]}..., 类型: {options['type']}")
         
-        return jsonify({
-            'code': 200,
-            'hash': file_hash
-        })
+        return jsonify({'code': 200, 'hash': file_hash})
         
     except Exception as e:
         logger.error(f"处理请求异常: {str(e)}")
@@ -303,19 +345,17 @@ def get_state():
         
         task = tasks.get(file_hash)
         if not task:
-            return jsonify({
-                'code': 404,
-                'state': 'NotFound'
-            }), 404
+            return jsonify({'code': 404, 'state': 'NotFound'}), 404
         
-        return jsonify({
-            'code': 200,
-            'state': task.state,
-            'message': task.message
-        })
+        response = {'code': 200, 'state': task.state, 'message': task.message}
+        if task.error_detail:
+            response['error_detail'] = task.error_detail
+        if task.return_code is not None:
+            response['return_code'] = task.return_code
+        
+        return jsonify(response)
         
     except Exception as e:
-        logger.error(f"查询状态异常: {str(e)}")
         return jsonify({'code': 500, 'error': str(e)}), 500
 
 @app.route('/DownFile', methods=['POST'])
@@ -339,19 +379,29 @@ def download_file():
         if not task.output_file or not os.path.exists(task.output_file):
             return jsonify({'code': 404, 'error': '输出文件不存在'}), 404
         
-        if task.end_time:
-            if (datetime.now() - task.end_time).total_seconds() > Config.EXPIRE_TIME:
-                return jsonify({'code': 410, 'error': '文件已过期'}), 410
+        if task.downloaded:
+            return jsonify({'code': 410, 'error': '文件已下载'}), 410
         
-        return send_file(
+        if task.end_time and (datetime.now() - task.end_time).total_seconds() > Config.EXPIRE_TIME:
+            force_delete_file(task.output_file)
+            del tasks[file_hash]
+            return jsonify({'code': 410, 'error': '文件已过期'}), 410
+        
+        response = send_file(
             task.output_file,
             as_attachment=True,
             download_name=f"{file_hash}.exe",
             mimetype='application/octet-stream'
         )
         
+        task.downloaded = True
+        force_delete_file(task.output_file)
+        del tasks[file_hash]
+        logger.info(f"下载后删除: {file_hash[:16]}...")
+        
+        return response
+        
     except Exception as e:
-        logger.error(f"下载文件异常: {str(e)}")
         return jsonify({'code': 500, 'error': str(e)}), 500
 
 @app.route('/ErrorLog', methods=['POST'])
@@ -369,24 +419,9 @@ def get_error_log():
         if not task:
             return jsonify({'code': 404, 'error': '未找到该任务'}), 404
         
-        # 注意：错误日志文件在编译目录中，但已经被清理
-        # 需要提前保存错误日志内容
-        error_log_path = os.path.join(Config.COMPILE_DIR, file_hash, "error.log")
-        if os.path.exists(error_log_path):
-            with open(error_log_path, 'r', encoding='gbk', errors='ignore') as f:
-                content = f.read()
-            return jsonify({
-                'code': 200,
-                'error_log': content
-            })
-        else:
-            return jsonify({
-                'code': 200,
-                'error_log': '无错误日志（文件已被清理）'
-            })
+        return jsonify({'code': 200, 'error_log': task.error_detail or '无错误日志'})
         
     except Exception as e:
-        logger.error(f"获取错误日志异常: {str(e)}")
         return jsonify({'code': 500, 'error': str(e)}), 500
 
 @app.route('/Health', methods=['GET'])
@@ -404,29 +439,20 @@ def list_tasks():
         task_list.append({
             'hash': file_hash,
             'state': task.state,
-            'compile_type': task.compile_type,
             'message': task.message,
-            'start_time': task.start_time.isoformat() if task.start_time else None,
-            'end_time': task.end_time.isoformat() if task.end_time else None
+            'downloaded': task.downloaded,
+            'return_code': task.return_code
         })
-    
-    return jsonify({
-        'code': 200,
-        'total': len(task_list),
-        'tasks': task_list
-    })
+    return jsonify({'code': 200, 'total': len(task_list), 'tasks': task_list})
 
-# ==================== 启动服务 ====================
 if __name__ == '__main__':
     if not os.path.exists(Config.ECL_EXE):
         logger.error(f"未找到编译工具: {Config.ECL_EXE}")
-        logger.error("请将 ecl.exe 放置到服务目录")
         sys.exit(1)
     
     cleanup_thread = threading.Thread(target=cleanup_expired_files, daemon=True)
     cleanup_thread.start()
     
-    logger.info(f"服务启动: http://{Config.HOST}:{Config.PORT}")
-    logger.info(f"支持编译类型: {', '.join(Config.COMPILE_TYPES.keys())}")
+    logger.info(f"Debug服务启动: http://{Config.HOST}:{Config.PORT}")
     
     app.run(host=Config.HOST, port=Config.PORT, threaded=True, debug=False)
