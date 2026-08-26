@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-易语言命令行编译服务 - 修复返回码判断
+易语言命令行编译服务
 """
 
 import os
@@ -51,7 +51,7 @@ for dir_name in [Config.UPLOAD_DIR, Config.COMPILE_DIR, Config.OUTPUT_DIR]:
     if not os.path.exists(dir_name):
         os.makedirs(dir_name)
 
-# 配置日志
+# 配置日志 - 精简模式
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -60,6 +60,9 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+# 关闭第三方库日志
+logging.getLogger('werkzeug').setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 tasks = {}
@@ -71,7 +74,6 @@ class CompileTask:
         self.compile_type = compile_type
         self.state = 'Pending'
         self.message = ''
-        self.error_detail = ''
         self.start_time = datetime.now()
         self.end_time = None
         self.output_file = None
@@ -90,30 +92,21 @@ def save_upload_file(file_data, file_hash):
     return file_path
 
 def compile_e_source(source_path, file_hash, task):
-    """执行编译 - 修复返回码判断"""
     try:
         task.state = 'Building'
         task.message = '编译中...'
-        logger.info(f"开始编译: {file_hash}, 类型: {task.compile_type}")
+        logger.info(f"编译: {file_hash[:16]}... 类型: {task.compile_type}")
         
-        # 准备目录
         compile_dir = os.path.join(Config.COMPILE_DIR, file_hash)
         if not os.path.exists(compile_dir):
             os.makedirs(compile_dir)
         
         output_path = os.path.join(compile_dir, f"{file_hash}.exe")
         
-        # 构建命令
         cmd = [Config.ECL_EXE, 'make', source_path, output_path]
-        
-        # 添加编译类型
         if task.compile_type in Config.COMPILE_TYPES:
             cmd.extend(Config.COMPILE_TYPES[task.compile_type])
         
-        logger.info(f"执行命令: {' '.join(cmd)}")
-        logger.info(f"工作目录: {compile_dir}")
-        
-        # 执行编译
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -124,73 +117,40 @@ def compile_e_source(source_path, file_hash, task):
             errors='ignore'
         )
         
-        # 记录输出
-        logger.info(f"返回码: {result.returncode}")
-        if result.stdout:
-            logger.info(f"STDOUT: {result.stdout[:500]}")
-        if result.stderr:
-            logger.info(f"STDERR: {result.stderr[:500]}")
-        
-        # ========== 修复：检查输出文件是否存在，而不是依赖返回码 ==========
-        # 检查输出文件是否生成
+        # 检查输出文件是否存在
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-            # 编译成功（即使返回码非0）
             task.state = 'OK'
             task.message = '编译成功'
-            task.error_detail = ''
             
             final_output = os.path.join(Config.OUTPUT_DIR, f"{file_hash}.exe")
             shutil.copy2(output_path, final_output)
             task.output_file = final_output
             
-            logger.info(f"编译成功: {file_hash}, 输出文件大小: {os.path.getsize(output_path)} bytes")
+            logger.info(f"编译成功: {file_hash[:16]}...")
         else:
-            # 编译失败
-            error_msgs = []
-            if result.stderr:
-                error_msgs.append(result.stderr.strip())
-            if result.stdout:
-                error_msgs.append(result.stdout.strip())
-            
-            error_detail = '\n'.join(error_msgs) if error_msgs else "无详细错误信息"
-            
-            # 检查常见错误
-            if "支持库" in error_detail or "library" in error_detail.lower():
-                task.message = "编译失败: 缺少支持库"
-            elif "密码" in error_detail or "password" in error_detail.lower():
-                task.message = "编译失败: 源码需要密码"
-            elif "找不到" in error_detail or "not found" in error_detail.lower():
-                task.message = "编译失败: 文件或路径不存在"
-            else:
-                task.message = "编译失败"
-            
+            error_msg = result.stderr or result.stdout or "未知错误"
             task.state = 'Error'
-            task.error_detail = error_detail
+            task.message = '编译失败'
             
-            # 写入错误日志
+            # 保存错误日志
             error_log_path = os.path.join(compile_dir, "error.log")
             with open(error_log_path, 'w', encoding='gbk', errors='ignore') as f:
                 f.write(f"命令: {' '.join(cmd)}\n")
                 f.write(f"返回码: {result.returncode}\n")
-                f.write(f"STDOUT:\n{result.stdout}\n")
-                f.write(f"STDERR:\n{result.stderr}\n")
+                f.write(f"输出:\n{error_msg}\n")
             
-            logger.error(f"编译失败: {file_hash}, 错误: {task.message}")
-            logger.error(f"详细错误: {error_detail[:200]}")
+            logger.error(f"编译失败: {file_hash[:16]}...")
             
     except subprocess.TimeoutExpired:
         task.state = 'Error'
-        task.message = '编译超时（超过10分钟）'
-        task.error_detail = '编译过程超过10分钟未完成'
-        logger.error(f"编译超时: {file_hash}")
+        task.message = '编译超时'
+        logger.error(f"编译超时: {file_hash[:16]}...")
     except Exception as e:
         task.state = 'Error'
         task.message = f'编译异常: {str(e)}'
-        task.error_detail = str(e)
-        logger.error(f"编译异常: {file_hash}, {str(e)}")
+        logger.error(f"编译异常: {file_hash[:16]}...")
     finally:
         task.end_time = datetime.now()
-        logger.info(f"编译完成: {file_hash}, 状态: {task.state}")
 
 def cleanup_expired_files():
     while True:
@@ -210,7 +170,7 @@ def cleanup_expired_files():
                 if task.source_path and os.path.exists(task.source_path):
                     os.remove(task.source_path)
                 del tasks[file_hash]
-                logger.info(f"清除过期任务: {file_hash}")
+                logger.info(f"清理任务: {file_hash[:16]}...")
             
             time.sleep(300)
         except Exception as e:
@@ -267,7 +227,7 @@ def make_e():
         thread.daemon = True
         thread.start()
         
-        logger.info(f"提交任务: {file_hash}, 类型: {compile_type}, 大小: {len(ecode)} bytes")
+        logger.info(f"提交任务: {file_hash[:16]}..., 类型: {compile_type}, 大小: {len(ecode)} bytes")
         
         return jsonify({
             'code': 200,
@@ -296,16 +256,11 @@ def get_state():
                 'state': 'NotFound'
             }), 404
         
-        response = {
+        return jsonify({
             'code': 200,
             'state': task.state,
             'message': task.message
-        }
-        
-        if task.state == 'Error' and task.error_detail:
-            response['error_detail'] = task.error_detail
-        
-        return jsonify(response)
+        })
         
     except Exception as e:
         logger.error(f"查询状态异常: {str(e)}")
@@ -373,7 +328,7 @@ def get_error_log():
         else:
             return jsonify({
                 'code': 200,
-                'error_log': task.error_detail or "无错误日志"
+                'error_log': '无错误日志'
             })
         
     except Exception as e:
