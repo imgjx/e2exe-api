@@ -26,7 +26,7 @@ E2EXE-API 是一个基于 HTTP 的易语言编译服务，通过 RESTful API 方
 - **操作系统**: Windows 7/8/10/11, Windows Server 2012 R2+
 - **Python**: 3.6 或更高版本
 - **易语言**: 5.0 或更高版本（需安装）
-- **编译工具**: [ecl.exe](https://github.com/AlongsCode/ecl) (易语言命令行编译工具)
+- **编译工具**: [ecl.exe](https://github.com/zhongjianhua163/ECommandPrompt) (易语言命令行编译工具)
 
 ## 🚀 快速开始
 
