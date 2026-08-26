@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-易语言命令行编译服务
+易语言API编译服务
 """
 
 import os
@@ -78,6 +78,7 @@ class CompileTask:
         self.end_time = None
         self.output_file = None
         self.source_path = None
+        self.compile_dir = None  # 记录编译目录以便清理
 
 # ==================== 工具函数 ====================
 def calculate_file_hash(file_data):
@@ -91,6 +92,30 @@ def save_upload_file(file_data, file_hash):
         f.write(file_data)
     return file_path
 
+def cleanup_compile_files(task):
+    """清理编译相关的所有文件"""
+    try:
+        # 删除源代码文件
+        if task.source_path and os.path.exists(task.source_path):
+            os.remove(task.source_path)
+            logger.debug(f"已删除源文件: {task.source_path}")
+        
+        # 删除编译目录（包含所有临时文件）
+        if task.compile_dir and os.path.exists(task.compile_dir):
+            shutil.rmtree(task.compile_dir, ignore_errors=True)
+            logger.debug(f"已删除编译目录: {task.compile_dir}")
+        
+        # 删除输出文件（如果存在且不是最终输出文件）
+        if task.output_file and os.path.exists(task.output_file):
+            os.remove(task.output_file)
+            logger.debug(f"已删除输出文件: {task.output_file}")
+        
+        # 从内存中删除任务记录（延迟删除，防止正在下载）
+        # 在清理函数中不立即删除tasks记录，由cleanup_expired_files处理
+        
+    except Exception as e:
+        logger.warning(f"清理文件失败: {str(e)}")
+
 def compile_e_source(source_path, file_hash, task):
     try:
         task.state = 'Building'
@@ -100,6 +125,7 @@ def compile_e_source(source_path, file_hash, task):
         compile_dir = os.path.join(Config.COMPILE_DIR, file_hash)
         if not os.path.exists(compile_dir):
             os.makedirs(compile_dir)
+        task.compile_dir = compile_dir  # 记录编译目录
         
         output_path = os.path.join(compile_dir, f"{file_hash}.exe")
         
@@ -151,8 +177,12 @@ def compile_e_source(source_path, file_hash, task):
         logger.error(f"编译异常: {file_hash[:16]}...")
     finally:
         task.end_time = datetime.now()
+        # 编译完成后，无论成功还是失败，都清理文件
+        cleanup_compile_files(task)
+        logger.info(f"文件清理完成: {file_hash[:16]}...")
 
 def cleanup_expired_files():
+    """清理过期任务和文件"""
     while True:
         try:
             now = datetime.now()
@@ -160,17 +190,39 @@ def cleanup_expired_files():
             
             for file_hash, task in tasks.items():
                 if task.state in ['OK', 'Error'] and task.end_time:
+                    # 给用户预留下载时间
                     if (now - task.end_time).total_seconds() > Config.EXPIRE_TIME:
                         expired.append(file_hash)
+                elif task.state == 'Pending' and (now - task.start_time).total_seconds() > 600:
+                    # 待处理超过10分钟的任务也清理
+                    expired.append(file_hash)
             
             for file_hash in expired:
                 task = tasks[file_hash]
+                # 确保所有文件都已清理（安全冗余）
                 if task.output_file and os.path.exists(task.output_file):
-                    os.remove(task.output_file)
-                if task.source_path and os.path.exists(task.source_path):
-                    os.remove(task.source_path)
+                    try:
+                        os.remove(task.output_file)
+                    except:
+                        pass
+                # 从任务列表中删除
                 del tasks[file_hash]
-                logger.info(f"清理任务: {file_hash[:16]}...")
+                logger.info(f"清理过期任务: {file_hash[:16]}...")
+            
+            # 清理输出目录中可能残留的文件（安全措施）
+            output_files = os.listdir(Config.OUTPUT_DIR)
+            for filename in output_files:
+                if filename.endswith('.exe'):
+                    file_hash = filename.replace('.exe', '')
+                    if file_hash not in tasks:
+                        file_path = os.path.join(Config.OUTPUT_DIR, filename)
+                        try:
+                            # 检查文件修改时间，超过1小时的文件删除
+                            if os.path.getmtime(file_path) < time.time() - 3600:
+                                os.remove(file_path)
+                                logger.debug(f"清理残留输出文件: {filename}")
+                        except:
+                            pass
             
             time.sleep(300)
         except Exception as e:
@@ -317,6 +369,8 @@ def get_error_log():
         if not task:
             return jsonify({'code': 404, 'error': '未找到该任务'}), 404
         
+        # 注意：错误日志文件在编译目录中，但已经被清理
+        # 需要提前保存错误日志内容
         error_log_path = os.path.join(Config.COMPILE_DIR, file_hash, "error.log")
         if os.path.exists(error_log_path):
             with open(error_log_path, 'r', encoding='gbk', errors='ignore') as f:
@@ -328,7 +382,7 @@ def get_error_log():
         else:
             return jsonify({
                 'code': 200,
-                'error_log': '无错误日志'
+                'error_log': '无错误日志（文件已被清理）'
             })
         
     except Exception as e:
