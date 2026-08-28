@@ -6,6 +6,9 @@
 [![Python](https://img.shields.io/badge/python-3.6+-green.svg)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/flask-2.3+-red.svg)](https://flask.palletsprojects.com/)
 
+## 📦在线使用
+[https://e.awafornt.cc/](https://e.awafornt.cc/)
+这只是一个DEMO，不要上传重要源码，后果自负
 ## 📖 简介
 
 E2EXE-API 是一个基于 HTTP 的易语言编译服务，通过 RESTful API 方式远程编译易语言源码。它封装了易语言命令行编译工具 `ecl.exe`，支持普通编译、静态编译、独立编译、黑月编译等多种编译模式，便于集成到自动化构建、CI/CD 流程中。
